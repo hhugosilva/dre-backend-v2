@@ -687,6 +687,54 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────
+// AI SUGGEST CATEGORIES (onboarding — tipo "Outro")
+// ──────────────────────────────────────────────────────────
+app.post('/api/ai/suggest-categories', auth, async (req, res) => {
+  const { description } = req.body;
+  if (!description?.trim()) return res.status(400).json({ error: 'Descrição obrigatória' });
+  const palette = ['#f87171','#60a5fa','#a78bfa','#fbbf24','#fb923c','#34d399','#94a3b8','#f472b6','#22d3ee','#818cf8'];
+  try {
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: `Você é um contador brasileiro especializado em MEI e pequenas empresas.
+O usuário descreveu seu negócio assim: "${description.trim()}"
+
+Gere categorias de custo/despesa para o DRE deste negócio e regras de palavras-chave para classificação automática.
+
+Responda SOMENTE com JSON válido neste formato exato:
+{
+  "businessLabel": "Nome curto do tipo de negócio (máx 20 chars, ex: Pet Shop, Academia, Artesanato)",
+  "categories": [
+    { "name": "Nome da categoria", "cost": true }
+  ],
+  "rules": [
+    { "keyword": "PALAVRA", "category": "Nome da categoria" }
+  ]
+}
+
+Instruções:
+- Gere entre 5 e 8 categorias de custo relevantes para este negócio específico
+- Sempre inclua Impostos/Taxas e, se aplicável, Funcionários/Salários
+- Keywords em MAIÚSCULO, referenciando categorias da lista acima
+- Entre 8 e 15 regras de palavras-chave comuns para este setor no Brasil
+- Apenas JSON, sem texto extra`,
+      }],
+    });
+    const text = msg.content[0].text.trim();
+    const match = text.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(match ? match[0] : text);
+    parsed.categories = (parsed.categories || []).map((c, i) => ({ ...c, color: palette[i % palette.length] }));
+    res.json(parsed);
+  } catch (e) {
+    console.error('[suggest-categories]', e.message);
+    res.status(500).json({ error: 'Erro ao gerar categorias.' });
+  }
+});
+
+// ──────────────────────────────────────────────────────────
 // AI CLASSIFY (Claude — chave oculta no backend)
 // ──────────────────────────────────────────────────────────
 app.post('/api/ai/classify', auth, async (req, res) => {
@@ -699,11 +747,11 @@ app.post('/api/ai/classify', auth, async (req, res) => {
     const fornText = fornConfig.length
       ? `\nFornecedores conhecidos desta empresa: ${fornConfig.map(f=>f.nome||f.name).join(', ')}`
       : '';
-    const costCats = categories.filter((c: any) => c.cost && !c.neutral).map((c: any) => c.name);
-    const otherCats = categories.filter((c: any) => !c.cost || c.neutral).map((c: any) => c.name);
+    const costCats = categories.filter(c => c.cost && !c.neutral).map(c => c.name);
+    const otherCats = categories.filter(c => !c.cost || c.neutral).map(c => c.name);
     const hasCats = costCats.length > 0;
     const catList = hasCats
-      ? `"Receita", ${costCats.map((c: string) => `"${c}"`).join(', ')}${otherCats.length ? ', ' + otherCats.map((c: string) => `"${c}"`).join(', ') : ''}, "Outros"`
+      ? `"Receita", ${costCats.map(c => `"${c}"`).join(', ')}${otherCats.length ? ', ' + otherCats.map(c => `"${c}"`).join(', ') : ''}, "Outros"`
       : '"Receita", "Fornecedores", "Operacional", "Marketing", "Impostos", "Pessoal", "Retirada PF", "Transferência Interna", "Outros"';
     const businessCtx = businessType ? `\nTipo de negócio: ${businessType}` : '';
     const sample = transactions.slice(0, 200);
