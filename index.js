@@ -145,6 +145,7 @@ async function initDB() {
       )
     `);
     try { await conn.query(`ALTER TABLE dre_config ADD COLUMN fornecedores JSON`); } catch {}
+    try { await conn.query(`ALTER TABLE dre_config ADD COLUMN business_type VARCHAR(50)`); } catch {}
     console.log('✓ Tabelas verificadas/criadas');
   } finally {
     conn.release();
@@ -689,39 +690,42 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // AI CLASSIFY (Claude — chave oculta no backend)
 // ──────────────────────────────────────────────────────────
 app.post('/api/ai/classify', auth, async (req, res) => {
-  const { transactions, rules = [], fornConfig = [] } = req.body;
+  const { transactions, rules = [], fornConfig = [], categories = [], businessType = '' } = req.body;
   if (!transactions?.length) return res.status(400).json({ error: 'Transações obrigatórias' });
   try {
     const rulesText = rules.length
-      ? `Regras personalizadas (prioridade máxima):\n${rules.map(r=>`- "${r.keyword}" → ${r.category}`).join('\n')}`
+      ? `\nRegras personalizadas (prioridade MÁXIMA — sempre obedeça):\n${rules.map(r=>`- Se a descrição contiver "${r.keyword}" → categoria: "${r.category}"`).join('\n')}`
       : '';
     const fornText = fornConfig.length
-      ? `Fornecedores conhecidos: ${fornConfig.map(f=>f.nome||f.name).join(', ')}`
+      ? `\nFornecedores conhecidos desta empresa: ${fornConfig.map(f=>f.nome||f.name).join(', ')}`
       : '';
-    const cats = ['Receita','Fornecedores','Operacional','Marketing','Impostos','Pessoal','Retirada PF','Transferência Interna','Outros'];
+    const costCats = categories.filter((c: any) => c.cost && !c.neutral).map((c: any) => c.name);
+    const otherCats = categories.filter((c: any) => !c.cost || c.neutral).map((c: any) => c.name);
+    const hasCats = costCats.length > 0;
+    const catList = hasCats
+      ? `"Receita", ${costCats.map((c: string) => `"${c}"`).join(', ')}${otherCats.length ? ', ' + otherCats.map((c: string) => `"${c}"`).join(', ') : ''}, "Outros"`
+      : '"Receita", "Fornecedores", "Operacional", "Marketing", "Impostos", "Pessoal", "Retirada PF", "Transferência Interna", "Outros"';
+    const businessCtx = businessType ? `\nTipo de negócio: ${businessType}` : '';
     const sample = transactions.slice(0, 200);
-    const prompt = `Você é um contador brasileiro especializado em DRE para MEI e pequenas empresas.
-Classifique cada transação abaixo em UMA das categorias: ${cats.join(', ')}.
-${rulesText}
-${fornText}
+    const prompt = `Você é um contador brasileiro especializado em DRE para MEI e pequenas empresas.${businessCtx}
+${rulesText}${fornText}
 
-Regras de classificação:
-- valor > 0 (entrada/crédito) → "Receita" (salvo se regra personalizada disser diferente)
+CATEGORIAS DISPONÍVEIS (use SOMENTE estas, nunca invente outras):
+${catList}
+
+Regras gerais de classificação:
+- valor > 0 (entrada/crédito) → "Receita" (salvo se regra personalizada indicar diferente)
 - Pix recebido, TED recebida, boleto recebido → "Receita"
-- Fornecedores de produtos ou serviços para a empresa → "Fornecedores"
-- Aluguel, internet, telefone, conta de luz, sistemas, assinaturas → "Operacional"
-- Google Ads, Meta, Facebook, Instagram Ads, marketing → "Marketing"
-- DAS, GNRE, DARF, impostos, tributos → "Impostos"
-- Salários, pró-labore, funcionários → "Pessoal"
-- Retirada do sócio, transferência para pessoa física do dono → "Retirada PF"
-- Transferência entre contas próprias → "Transferência Interna"
-- Tarifas bancárias, IOF, empréstimos → "Operacional"
+- Transferência entre contas próprias do mesmo titular → "Transferência Interna" (se houver) ou "Outros"
+- Tarifas bancárias, IOF → use a categoria mais próxima disponível ou "Outros"
+- Se tiver regra personalizada para a palavra-chave, ela tem PRIORIDADE MÁXIMA sobre qualquer outra lógica
+- Escolha a categoria da lista que melhor representa a transação para este tipo de negócio
 
-Transações (cada item tem id, descricao, valor):
+Transações (id, descricao, valor):
 ${JSON.stringify(sample)}
 
-Retorne SOMENTE JSON válido preservando o id: [{"id":NUMBER,"categoria":"..."}]
-Sem texto extra, sem markdown.`;
+Retorne SOMENTE JSON válido: [{"id":NUMBER,"categoria":"NOME_EXATO_DA_CATEGORIA"}]
+Sem texto extra, sem markdown. O nome da categoria deve ser EXATAMENTE igual ao disponível na lista.`;
 
     const msg = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -915,21 +919,21 @@ app.get('/api/historico', auth, async (req, res) => {
 // ──────────────────────────────────────────────────────────
 app.get('/api/config', auth, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT categories, rules, fornecedores FROM dre_config WHERE user_id=?', [req.user.id]);
-    if (!rows.length) return res.json({ config: { categories: null, rules: [], fornecedores: [] } });
+    const [rows] = await pool.query('SELECT categories, rules, fornecedores, business_type FROM dre_config WHERE user_id=?', [req.user.id]);
+    if (!rows.length) return res.json({ config: { categories: null, rules: [], fornecedores: [], business_type: null } });
     const r = rows[0];
-    res.json({ config: { categories: r.categories, rules: r.rules || [], fornecedores: r.fornecedores || [] } });
+    res.json({ config: { categories: r.categories, rules: r.rules || [], fornecedores: r.fornecedores || [], business_type: r.business_type || null } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Erro interno' }); }
 });
 
 app.put('/api/config', auth, async (req, res) => {
-  const { categories, rules, fornecedores } = req.body;
+  const { categories, rules, fornecedores, business_type } = req.body;
   try {
     await pool.query(
-      `INSERT INTO dre_config (user_id, categories, rules, fornecedores)
-       VALUES (?,?,?,?)
-       ON DUPLICATE KEY UPDATE categories=VALUES(categories),rules=VALUES(rules),fornecedores=VALUES(fornecedores)`,
-      [req.user.id, JSON.stringify(categories??null), JSON.stringify(rules??[]), JSON.stringify(fornecedores??[])]
+      `INSERT INTO dre_config (user_id, categories, rules, fornecedores, business_type)
+       VALUES (?,?,?,?,?)
+       ON DUPLICATE KEY UPDATE categories=VALUES(categories),rules=VALUES(rules),fornecedores=VALUES(fornecedores),business_type=VALUES(business_type)`,
+      [req.user.id, JSON.stringify(categories??null), JSON.stringify(rules??[]), JSON.stringify(fornecedores??[]), business_type||null]
     );
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Erro interno' }); }
