@@ -755,28 +755,48 @@ app.post('/api/ai/classify', auth, async (req, res) => {
       : '"Receita", "Fornecedores", "Operacional", "Marketing", "Impostos", "Pessoal", "Retirada PF", "Transferência Interna", "Outros"';
     const businessCtx = businessType ? `\nTipo de negócio: ${businessType}` : '';
     const sample = transactions.slice(0, 200);
+    const catDescriptions = {
+      'Fornecedores':         'compras de mercadoria, fábricas, fornecedores, frete de compra, matéria-prima',
+      'Operacional':          'aluguel, energia, telefone, internet, sistema, embalagem, tarifas bancárias, taxas de marketplace, manutenção',
+      'Marketing':            'anúncios, publicidade, influencer, Meta Ads, Google Ads, tráfego pago',
+      'Impostos':             'DAS, DARF, INSS, FGTS, SIMPLES, GNRE, tributos, guia de pagamento fiscal',
+      'Pessoal':              'salário, pró-labore, adiantamento, funcionário, folha de pagamento',
+      'Retirada PF':          'saques, transferências para conta pessoal do sócio, retiradas do dono',
+      'Transferência Interna':'transferência entre contas próprias, resgate de CDB/investimento, pagamento de fatura do próprio cartão',
+      'Assinaturas':          'assinaturas mensais, software, SaaS, Netflix, Spotify, ferramentas digitais',
+      'Alimentação':          'supermercado, restaurante, delivery, alimentação',
+      'Transporte':           'combustível, Uber, transporte, pedágio, estacionamento',
+      'Saúde':                'farmácia, médico, plano de saúde, exame',
+    };
+    const catDescText = costCats.map(c => catDescriptions[c] ? `- ${c}: ${catDescriptions[c]}` : `- ${c}`).join('\n');
+
     const prompt = `Você é um contador brasileiro especializado em DRE para MEI e pequenas empresas.${businessCtx}
 ${rulesText}${fornText}
 
 CATEGORIAS DISPONÍVEIS (use SOMENTE estas, nunca invente outras):
 ${catList}
 
-Regras gerais de classificação:
+Descrição de cada categoria de custo:
+${catDescText}
+
+Regras de classificação:
 - valor > 0 (entrada/crédito) → "Receita" (salvo se regra personalizada indicar diferente)
 - Pix recebido, TED recebida, boleto recebido → "Receita"
-- Transferência entre contas próprias do mesmo titular → "Transferência Interna" (se houver) ou "Outros"
-- Tarifas bancárias, IOF → use a categoria mais próxima disponível ou "Outros"
-- Se tiver regra personalizada para a palavra-chave, ela tem PRIORIDADE MÁXIMA sobre qualquer outra lógica
-- Escolha a categoria da lista que melhor representa a transação para este tipo de negócio
+- RESGATE DE CDB, resgate de investimento → "Transferência Interna"
+- Pagamento de fatura de cartão (PGTO FAT, FAT CARTAO) → "Transferência Interna"
+- Saques (SAQUE BANCO) → "Retirada PF" se disponível, senão "Outros"
+- Transferência entre contas do mesmo titular → "Transferência Interna"
+- Tarifas bancárias, IOF, SEGURO CONTA → "Operacional" ou categoria mais próxima
+- Se tiver regra personalizada para a palavra-chave, ela tem PRIORIDADE MÁXIMA
 
 Transações (id, descricao, valor):
 ${JSON.stringify(sample)}
 
 Retorne SOMENTE JSON válido: [{"id":NUMBER,"categoria":"NOME_EXATO_DA_CATEGORIA"}]
-Sem texto extra, sem markdown. O nome da categoria deve ser EXATAMENTE igual ao disponível na lista.`;
+Sem texto extra, sem markdown.`;
 
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     });
