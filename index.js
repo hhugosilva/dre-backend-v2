@@ -146,6 +146,7 @@ async function initDB() {
     `);
     try { await conn.query(`ALTER TABLE dre_config ADD COLUMN fornecedores JSON`); } catch {}
     try { await conn.query(`ALTER TABLE dre_config ADD COLUMN business_type VARCHAR(50)`); } catch {}
+    try { await conn.query(`ALTER TABLE dre_config ADD COLUMN memory JSON`); } catch {}
     console.log('✓ Tabelas verificadas/criadas');
   } finally {
     conn.release();
@@ -987,21 +988,34 @@ app.get('/api/historico', auth, async (req, res) => {
 // ──────────────────────────────────────────────────────────
 app.get('/api/config', auth, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT categories, rules, fornecedores, business_type FROM dre_config WHERE user_id=?', [req.user.id]);
-    if (!rows.length) return res.json({ config: { categories: null, rules: [], fornecedores: [], business_type: null } });
+    const [rows] = await pool.query('SELECT categories, rules, fornecedores, business_type, memory FROM dre_config WHERE user_id=?', [req.user.id]);
+    if (!rows.length) return res.json({ config: { categories: null, rules: [], fornecedores: [], business_type: null, memory: {} } });
     const r = rows[0];
-    res.json({ config: { categories: r.categories, rules: r.rules || [], fornecedores: r.fornecedores || [], business_type: r.business_type || null } });
+    res.json({ config: { categories: r.categories, rules: r.rules || [], fornecedores: r.fornecedores || [], business_type: r.business_type || null, memory: r.memory || {} } });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Erro interno' }); }
 });
 
 app.put('/api/config', auth, async (req, res) => {
-  const { categories, rules, fornecedores, business_type } = req.body;
+  const { categories, rules, fornecedores, business_type, memory } = req.body;
   try {
     await pool.query(
-      `INSERT INTO dre_config (user_id, categories, rules, fornecedores, business_type)
-       VALUES (?,?,?,?,?)
-       ON DUPLICATE KEY UPDATE categories=VALUES(categories),rules=VALUES(rules),fornecedores=VALUES(fornecedores),business_type=VALUES(business_type)`,
-      [req.user.id, JSON.stringify(categories??null), JSON.stringify(rules??[]), JSON.stringify(fornecedores??[]), business_type||null]
+      `INSERT INTO dre_config (user_id, categories, rules, fornecedores, business_type, memory)
+       VALUES (?,?,?,?,?,?)
+       ON DUPLICATE KEY UPDATE categories=VALUES(categories),rules=VALUES(rules),fornecedores=VALUES(fornecedores),business_type=VALUES(business_type),memory=VALUES(memory)`,
+      [req.user.id, JSON.stringify(categories??null), JSON.stringify(rules??[]), JSON.stringify(fornecedores??[]), business_type||null, JSON.stringify(memory??{})]
+    );
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Erro interno' }); }
+});
+
+app.patch('/api/memory', auth, async (req, res) => {
+  const { key, categoria } = req.body;
+  if (!key || !categoria) return res.status(400).json({ error: 'key e categoria obrigatórios' });
+  try {
+    await pool.query(
+      `INSERT INTO dre_config (user_id, memory) VALUES (?, JSON_OBJECT(?, ?))
+       ON DUPLICATE KEY UPDATE memory = JSON_SET(COALESCE(memory, '{}'), CONCAT('$.', ?), ?)`,
+      [req.user.id, key, categoria, key, categoria]
     );
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Erro interno' }); }
