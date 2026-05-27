@@ -1014,7 +1014,7 @@ app.patch('/api/memory', auth, async (req, res) => {
   try {
     await pool.query(
       `INSERT INTO dre_config (user_id, memory) VALUES (?, JSON_OBJECT(?, ?))
-       ON DUPLICATE KEY UPDATE memory = JSON_SET(COALESCE(memory, '{}'), CONCAT('$.', ?), ?)`,
+       ON DUPLICATE KEY UPDATE memory = JSON_MERGE_PATCH(COALESCE(memory, '{}'), JSON_OBJECT(?, ?))`,
       [req.user.id, key, categoria, key, categoria]
     );
     res.json({ ok: true });
